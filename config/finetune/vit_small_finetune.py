@@ -5,7 +5,8 @@ import os
 def vit_small_finetune():
     args = argparse.Namespace()
 
-    args.dataset = 'imagenet1k'
+    # [CUB, Stanford_Dogs]
+    args.dataset = 'CUB'
     args.arch = 'vit-small'
     args.pretrained_weights = ''
     args.resume = None
@@ -23,6 +24,24 @@ def vit_small_finetune():
         args.input_size = 224
         args.batch_size = 1024
         args.data_root = '/path/to/ILSVRC2012'
+        args.distributed = True
+    elif args.dataset == 'CUB':
+        args.num_workers = 12
+        args.prefetch_factor = 3
+        args.pin_memory = True
+        args.patch_size = 16
+        args.input_size = 224
+        args.batch_size = 256
+        args.data_root = '/public/datasets/CUB-200-2011/CUB_200_2011/splited_images'
+        args.distributed = True
+    elif args.dataset == 'Stanford_Dogs':
+        args.num_workers = 16
+        args.prefetch_factor = 3
+        args.pin_memory = True
+        args.patch_size = 16
+        args.input_size = 224
+        args.batch_size = 256
+        args.data_root = '/public/datasets/Stanford_Dogs/splited_images/'
         args.distributed = True
     else:
         args.num_workers = 4
@@ -103,7 +122,7 @@ def vit_small_finetune():
     # ----------------#
     args.dist_url = 'tcp://localhost:12613'
     args.dist_backend = 'nccl'
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
+    # os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
     args.world_size = 1
 
     args.print_freq = 100

@@ -5,7 +5,7 @@ import os
 def vit_small_linear():
     args = argparse.Namespace()
 
-    args.dataset = 'imagenet1k'
+    args.dataset = 'CUB'
     args.arch = 'vit-small'
     args.pretrained_weights = ''
     args.resume = None
@@ -23,6 +23,22 @@ def vit_small_linear():
         args.input_size = 224
         args.batch_size = 1024
         args.data_root = '/path/to/ILSVRC2012'
+    elif args.dataset == 'CUB':
+        args.num_workers = 12
+        args.prefetch_factor = 3
+        args.pin_memory = True
+        args.patch_size = 16
+        args.input_size = 224
+        args.batch_size = 256
+        args.data_root = '/public/datasets/CUB-200-2011/CUB_200_2011/splited_images'
+    elif args.dataset == 'Stanford_Dogs':
+        args.num_workers = 16
+        args.prefetch_factor = 3
+        args.pin_memory = True
+        args.patch_size = 16
+        args.input_size = 224
+        args.batch_size = 256
+        args.data_root = '/public/datasets/Stanford_Dogs/splited_images/'
     else:
         args.num_workers = 4
         args.prefetch_factor = 2
@@ -50,12 +66,16 @@ def vit_small_linear():
     elif args.dataset == 'imagenet1k':
         args.lr = 0.02
         args.weight_decay = 0.0
+    # [CUB, Stanford_Dogs]
+    else:
+        args.lr = 0.02
+        args.weight_decay = 0.0
 
     # ----------------#
-    args.dist_url = 'tcp://localhost:12612'
+    args.dist_url = 'tcp://localhost:12631'
     args.dist_backend = 'nccl'
     args.rank = 0
-    os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+    # os.environ["CUDA_VISIBLE_DEVICES"] = '0'
     args.world_size = 1
 
     args.print_freq = 100

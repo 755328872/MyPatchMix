@@ -25,8 +25,12 @@ class ImageFolderInstance(datasets.ImageFolder):
 
 def build_dataset(is_train, args):
     transform = build_transform(args)
-    dataset = ImageFolderInstance(
-        root=os.path.join(args.data_root, 'train' if is_train else 'val'), transform=transform)
+    if args.dataset == 'CUB' or args.dataset == 'Stanford_Dogs':
+        dataset = ImageFolderInstance(
+        root=os.path.join(args.data_root, 'train' if is_train else 'test'), transform=transform)
+    else:
+        dataset = ImageFolderInstance(
+            root=os.path.join(args.data_root, 'train' if is_train else 'val'), transform=transform)
     return dataset
 
 
@@ -316,8 +320,8 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--arch", type=str, default='vit-small',
                         choices=['vit-tiny', 'vit-small', 'vit-base'])
-    parser.add_argument("--pretrained-weights", type=str,
-                        default='')
+    # parser.add_argument("--pretrained-weights", type=str,
+    #                     default='')
     return parser
 
 
@@ -325,6 +329,6 @@ if __name__ == '__main__':
     parser = parse_args()
     _args = parser.parse_args()
     args = knn()
-    args.pretrained_weights = _args.pretrained_weights
+    # args.pretrained_weights = _args.pretrained_weights
     args.arch = _args.arch
     main_ddp(args)

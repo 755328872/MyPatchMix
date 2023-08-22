@@ -1,5 +1,6 @@
 import argparse
 import os
+import time
 
 import numpy as np
 import torch
@@ -8,7 +9,13 @@ import torch.multiprocessing as mp
 import torch.nn as nn
 from torch.cuda.amp import GradScaler
 from torch.nn.parallel import DistributedDataParallel as DDP
+
+# dataloader and sampler
+from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader
+# from utils.dataloader import DataLoader # Note: pytorch version >= 2.0
+# from utils.sampler import DistributedSampler, RandomSampler, SequentialSampler, WeightedRandomSampler
+
 from torchvision import datasets
 
 from config.pretrain.vit_base_pretrain import vit_base_pretrain
@@ -24,6 +31,7 @@ from utils import misc
 from utils.logger import Logger, console_logger
 from utils.misc import AverageMeter, adjust_moco_momentum
 
+# os.environ["CUDA_VISIBLE_DEVICES"] = '0,1,2,3'
 
 def train_epoch(train_loader, model, criterion, optimizer, lr_schedule, wd_schedule, temp_schedule, mixer, scaler,
                 loggers, epoch, args):
@@ -47,6 +55,17 @@ def train_epoch(train_loader, model, criterion, optimizer, lr_schedule, wd_sched
     moco_m = args.moco_m
     temp = temp_schedule[epoch]
     for i, (images, _) in enumerate(train_loader):
+        images[0] = images[0].cuda(args.rank, non_blocking=True)
+        images[1] = images[1].cuda(args.rank, non_blocking=True)
+        if args.multi_crop_num != 0:
+            for id in range(args.multi_crop_num):
+                images[2][id] = images[2][id].cuda(
+                    args.rank, non_blocking=True)
+
+        # 计算Epoch 读取时间
+        if i == 0 and args.rank == 0:
+            t1 = time.time()
+
         # update weight decay and learning rate according to their schedule
         it = num_iter * epoch + i  # global training iteration
         for i, param_group in enumerate(optimizer.param_groups):
@@ -60,30 +79,70 @@ def train_epoch(train_loader, model, criterion, optimizer, lr_schedule, wd_sched
             with torch.no_grad():  # no gradient
                 model.module.update_momentum_encoder(moco_m)
 
-        images[0] = images[0].cuda(args.rank, non_blocking=True)
-        images[1] = images[1].cuda(args.rank, non_blocking=True)
-        if args.multi_crop_num != 0:
-            for id in range(args.multi_crop_num):
-                images[2][id] = images[2][id].cuda(
-                    args.rank, non_blocking=True)
-
         N = images[0].size(0)
-        target = torch.arange(N, dtype=torch.long).cuda()
+        # 省显存
+        target = torch.arange(N, dtype=torch.long, device=args.rank)
         optimizer.zero_grad()
         mix_image1, mix_target, mix2_target = mixer(images[0], target)
         mix_image2, mix_target, mix2_target = mixer(images[1], target)
         images[0], target0, _ = no_mixer(images[0], target)
         images[1], target0, _ = no_mixer(images[1], target)
-        
 
-        with torch.cuda.amp.autocast(True):
-            q1, k1 = model(images[0])
-            _, k2 = model(images[1], q=False)
-            _, m_k1 = model(mix_image1, q=False)
-            m_q2, _ = model(mix_image2, k=False)
-            src_loss = criterion(q1, k2.detach(), target0, temp)
-            mix_loss = criterion(m_q2, k1.detach(), mix_target, temp) / 2.0
-            mix2_loss = criterion(m_q2, m_k1.detach(), mix2_target, temp) / 2.0
+        # 省显存
+        if not args.use_save_mem:
+            with torch.cuda.amp.autocast(True):
+                q1, k1 = model(images[0])
+                _, k2 = model(images[1], q=False)
+                _, m_k1 = model(mix_image1, q=False)
+                m_q2, _ = model(mix_image2, k=False)
+                src_loss = criterion(q1, k2.detach(), target0, temp)
+                mix_loss = criterion(m_q2, k1.detach(), mix_target, temp) / 2.0
+                mix2_loss = criterion(m_q2, m_k1.detach(), mix2_target, temp) / 2.0
+                multi_loss = 0.
+                multi_mix_loss = 0.
+                if args.multi_crop_num != 0:
+                    multi_image = []
+                    multi_mix_image = []
+                    for id in range(args.multi_crop_num):
+                        images[2][id], _, _ = no_mixer(images[2][id], target)
+                        mix_image, _, _ = mixer(images[2][id], target)
+                        multi_image.append(images[2][id])
+                        multi_mix_image.append(mix_image)
+                    multi_image = torch.cat(multi_image, dim=0)
+                    multi_mix_image = torch.cat(multi_mix_image, dim=0)
+                    with torch.cuda.amp.autocast(True):
+                        multi_q_, _ = model(multi_image, k=False)
+                        multi_m_q_, _ = model(multi_mix_image, k=False)
+                        mts1 = 0.
+                        mts2 = 0.
+                        mtms1 = 0.
+                        mtms2 = 0.
+                        for id in range(args.multi_crop_num):
+                            mts1 += criterion(multi_q_[N * id:N * (id + 1)], k1.detach(), target0, temp)
+                            mts2 += criterion(multi_q_[N * id:N * (id + 1)], k2.detach(), target0, temp)
+                            mtms1 += criterion(multi_m_q_[N * id:N * (id + 1)], k1.detach(), mix_target, temp)
+                            mtms2 += criterion(multi_m_q_[N * id:N * (id + 1)], k2.detach(), mix_target, temp)
+                        multi_loss = (mts1 + mts2) / args.multi_crop_num
+                        multi_mix_loss = (mtms1 + mtms2) / args.multi_crop_num
+                loss = src_loss + mix_loss + mix2_loss + multi_loss + multi_mix_loss
+
+            scaler.scale(loss).backward()
+        else:
+            with torch.cuda.amp.autocast(True):
+                q1, k1 = model(images[0])
+                with torch.no_grad():
+                    _, k2 = model(images[1], q=False)
+                src_loss = criterion(q1, k2.detach(), target0, temp)
+            scaler.scale(src_loss).backward()
+
+            with torch.cuda.amp.autocast(True):
+                m_q2, _ = model(mix_image2, k=False)
+                with torch.no_grad():
+                    _, m_k1 = model(mix_image1, q=False)
+                mix_loss = criterion(m_q2, k1.detach(), mix_target, temp) / 2.0
+                mix2_loss = criterion(m_q2, m_k1.detach(), mix2_target, temp) / 2.0
+            scaler.scale(mix_loss + mix2_loss).backward()
+
             multi_loss = 0.
             multi_mix_loss = 0.
             if args.multi_crop_num != 0:
@@ -104,15 +163,18 @@ def train_epoch(train_loader, model, criterion, optimizer, lr_schedule, wd_sched
                     mtms1 = 0.
                     mtms2 = 0.
                     for id in range(args.multi_crop_num):
-                        mts1 += criterion(multi_q_[N * id:N * (id + 1)], k1.detach(), target0, temp)
-                        mts2 += criterion(multi_q_[N * id:N * (id + 1)], k2.detach(), target0, temp)
-                        mtms1 += criterion(multi_m_q_[N * id:N * (id + 1)], k1.detach(), mix_target, temp)
-                        mtms2 += criterion(multi_m_q_[N * id:N * (id + 1)], k2.detach(), mix_target, temp)
+                        mts1 += criterion(multi_q_[N *
+                                          id:N*(id+1)], k1.detach(), target0, temp)
+                        mts2 += criterion(multi_q_[N *
+                                          id:N*(id+1)], k2.detach(), target0, temp)
+                        mtms1 += criterion(multi_m_q_[N *
+                                                      id:N*(id+1)], k1.detach(), mix_target, temp)
+                        mtms2 += criterion(multi_m_q_[N *
+                                                      id:N*(id+1)], k2.detach(), mix_target, temp)
                     multi_loss = (mts1 + mts2) / args.multi_crop_num
                     multi_mix_loss = (mtms1 + mtms2) / args.multi_crop_num
+                scaler.scale(multi_loss + multi_mix_loss).backward()
             loss = src_loss + mix_loss + mix2_loss + multi_loss + multi_mix_loss
-        scaler.scale(loss).backward()
-        
 
         scaler.step(optimizer)
         scaler.update()
@@ -129,6 +191,10 @@ def train_epoch(train_loader, model, criterion, optimizer, lr_schedule, wd_sched
         learning_rates.update(lr_schedule[it])
         weight_decays.update(wd_schedule[it])
         niter_global += 1
+
+    if args.rank == 0:
+        t = time.time()- t1
+        print('Epoch Time', t)
 
     if args.distributed:
         src_losses.synchronize_between_processes()
@@ -151,15 +217,15 @@ def train_epoch(train_loader, model, criterion, optimizer, lr_schedule, wd_sched
                             )
 
     if logger_tb is not None and args.rank == 0:
-        logger_tb.add_scalar('Epoch/Src Loss', src_losses.avg, epoch + 1)
-        logger_tb.add_scalar('Epoch/Mix Loss', mix_losses.avg, epoch + 1)
-        logger_tb.add_scalar('Epoch/Mix2 Loss', mix2_losses.avg, epoch + 1)
-        logger_tb.add_scalar('Epoch/Multi Loss', multi_losses.avg, epoch + 1)
-        logger_tb.add_scalar('Epoch/Multi Mix Loss',
-                             multi_mix_losses.avg, epoch + 1)
+        # logger_tb.add_scalar('Epoch/Src Loss', src_losses.avg, epoch + 1)
+        # logger_tb.add_scalar('Epoch/Mix Loss', mix_losses.avg, epoch + 1)
+        # logger_tb.add_scalar('Epoch/Mix2 Loss', mix2_losses.avg, epoch + 1)
+        # logger_tb.add_scalar('Epoch/Multi Loss', multi_losses.avg, epoch + 1)
+        # logger_tb.add_scalar('Epoch/Multi Mix Loss',
+        #                      multi_mix_losses.avg, epoch + 1)
         logger_tb.add_scalar('Epoch/Loss', losses.avg, epoch + 1)
-        logger_tb.add_scalar('Epoch/lr', lr_schedule[it], epoch + 1)
-        logger_tb.add_scalar('Epoch/wd', wd_schedule[it], epoch + 1)
+        # logger_tb.add_scalar('Epoch/lr', lr_schedule[it], epoch + 1)
+        # logger_tb.add_scalar('Epoch/wd', wd_schedule[it], epoch + 1)
 
 
 def main_worker(gpu, ngpus_per_node, args):
@@ -206,6 +272,9 @@ def main_worker(gpu, ngpus_per_node, args):
         model = ContrastNoMomentum_ViT(base_encoder, args.proj_layer,
                                        args.pred_layer, args.out_dim, args.hidden_dim)
 
+    # torch 2.0 compile
+    # model = torch.compile(model)
+
     model = model.cuda(args.rank)
 
     args.lr = args.lr * args.batch_size / 256
@@ -217,6 +286,7 @@ def main_worker(gpu, ngpus_per_node, args):
             (args.num_workers + args.world_size - 1) / args.world_size)
         model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
         model = DDP(model, device_ids=[args.rank], broadcast_buffers=False)
+
 
     # --------------------------- data load -----------------------#
     transform = TwoCropsTransform(
@@ -230,9 +300,16 @@ def main_worker(gpu, ngpus_per_node, args):
     elif args.dataset == 'imagenet1k':
         train_set = datasets.ImageFolder(root=os.path.join(args.data_root, 'train'),
                                          transform=transform)
+    elif args.dataset == 'CUB':
+        train_set = datasets.ImageFolder(root=os.path.join(args.data_root, 'train'),
+                                         transform=transform)
+    elif args.dataset == 'Stanford_Dogs':
+        train_set = datasets.ImageFolder(root=os.path.join(args.data_root, 'train'),
+                                         transform=transform)
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_set)
+        # train_sampler = DistributedSampler(train_set, num_epochs=args.epochs)
     else:
         train_sampler = None
 
@@ -243,7 +320,8 @@ def main_worker(gpu, ngpus_per_node, args):
                               sampler=train_sampler,
                               pin_memory=args.pin_memory,
                               drop_last=True,
-                              prefetch_factor=args.prefetch_factor)
+                              prefetch_factor=args.prefetch_factor,
+                              persistent_workers=True)
 
     args.niters_per_epoch = len(train_set) // args.batch_size
 

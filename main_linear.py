@@ -37,6 +37,14 @@ def build_dataset(is_train, args):
         dataset = datasets.ImageFolder(
             root=os.path.join(args.data_root, 'train' if is_train else 'val'), transform=transform)
         nb_classes = 1000
+    elif args.dataset == 'CUB':
+        dataset = datasets.ImageFolder(
+            root=os.path.join(args.data_root, 'train' if is_train else 'test'), transform=transform)
+        nb_classes = 200
+    elif args.dataset == 'Stanford_Dogs':
+        dataset = datasets.ImageFolder(
+            root=os.path.join(args.data_root, 'train' if is_train else 'test'), transform=transform)
+        nb_classes = 120
     return dataset, nb_classes
 
 
@@ -381,8 +389,8 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--arch", type=str, default='vit-small',
                         choices=['vit-tiny', 'vit-small', 'vit-base'])
-    parser.add_argument("--pretrained-weights", type=str,
-                        default='')
+    # parser.add_argument("--pretrained-weights", type=str,
+    #                     default='')
     parser.add_argument("--evaluate", type=str, default=None)
     return parser
 
@@ -397,6 +405,6 @@ if __name__ == '__main__':
         args = vit_small_linear()
     elif _args.arch == 'vit-base':
         args = vit_base_linear()
-    args.pretrained_weights = _args.pretrained_weights
+    # args.pretrained_weights = _args.pretrained_weights
     args.evaluate = _args.evaluate
     main_ddp(args)

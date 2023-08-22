@@ -252,3 +252,27 @@ class MetricLogger(object):
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
         print('{} Total time: {} ({:.6f} s / it)'.format(
             header, total_time_str, total_time / len(iterable)))
+
+def copy_files(src_dir, dst_dir, exclude_file_list):
+    # 把文件夹里面的文件的名保存为list
+    fnames = os.listdir(src_dir)
+
+    os.makedirs(dst_dir, exist_ok=True)
+    for f in fnames:
+        # 不要exclude_file_list里面的同名文件
+        if f not in exclude_file_list:
+            # 生成源文件路径
+            src = os.path.join(src_dir, f)
+            # 是否存在该路径
+            if os.path.isdir(src):
+                # 生成目标文件路径
+                dst = os.path.join(dst_dir, f)
+                print(f'copy {src} to {dst}')
+                # 复制源文件到目标路径下
+                shutil.copytree(src, dst)
+            elif os.path.isfile(src):
+                print(f'copy {src} to {dst_dir}')
+                shutil.copy(src, dst_dir)
+            else:
+                ValueError(f'{src} can not be copied')
+    return

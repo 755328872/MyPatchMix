@@ -5,7 +5,8 @@ def vit_base_pretrain():
     args = argparse.Namespace()
     args.arch = 'vit-base'
     args.resume = None
-    args.dataset = 'imagenet1k'
+    # 注意设置的数据集
+    args.dataset = 'CUB'
     args.seed = 7
 
     if args.dataset == 'imagenet1k':
@@ -46,6 +47,48 @@ def vit_base_pretrain():
         args.mix_size = args.patch_size
         args.smoothing = 0.0
         args.min_crop = 0.1
+    elif args.dataset == 'CUB':
+        # 200 classes
+        # 下面的参数要调
+        args.data_root = '/disk2/dataset/CUB-200-2011/CUB_200_2011/splited_images'
+        args.input_size = 224
+        args.patch_size = 16
+        args.num_workers = 32
+        args.prefetch_factor = 3
+        args.pin_memory = True
+        args.save_freq = 10
+        args.epochs = 300
+        args.batch_size = 128
+        args.warmup_epoch = 30
+        args.multi_crop_size = 96
+        # multi-crop params
+        args.multi_crop_num = 8  # unuse multi-crop when set 0
+        args.global_crop = 0.35
+        args.mix_num = 2
+        args.mix_size = args.patch_size
+        args.smoothing = 0.0
+        args.min_crop = 0.05
+    elif args.dataset == 'Stanford_Dogs':
+        # 120 classes
+        # 下面的参数要调
+        args.data_root = '/disk2/dataset/Stanford_Dogs/'
+        args.input_size = 224
+        args.patch_size = 16
+        args.num_workers = 32
+        args.prefetch_factor = 3
+        args.pin_memory = True
+        args.save_freq = 10
+        args.epochs = 300
+        args.batch_size = 1024
+        args.warmup_epoch = 10
+        args.multi_crop_size = 96
+        # multi-crop params
+        args.multi_crop_num = 8  # unuse multi-crop when set 0
+        args.global_crop = 0.35
+        args.mix_num = 2
+        args.mix_size = args.patch_size
+        args.smoothing = 0.0
+        args.min_crop = 0.05
 
     args.drop_path = 0.1
 
